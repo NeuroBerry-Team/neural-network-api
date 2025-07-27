@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  # Neural Network API Service (Production)
+  neural-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neural-api-prod
+    ports:
+      - "5000:5000"
+    volumes:
+      # Only mount necessary persistent data
+      - neural_api_temp:/app/api/src/temp_images
+      - neural_api_logs:/app/logs
+    environment:
+      - FLASK_ENV=production
+      - PYTHONPATH=/app
+    env_file:
+      - .env
+    depends_on:
+      - minio
+    networks:
+      - neural_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/', timeout=10)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # MinIO Object Storage Service (Production)
+  minio:
+    image: minio/minio:latest
+    container_name: minio-prod
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    networks:
+      - neural_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+
+  # MinIO Client for bucket setup (Production)
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup-prod
+    depends_on:
+      - minio
+    networks:
+      - neural_network
+    environment:
+      - MINIO_ACCESS_KEY=${S3_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${S3_SECRET_KEY}
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Waiting for MinIO to be ready...';
+      until /usr/bin/mc alias set myminio http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY; do
+        echo 'MinIO not ready, retrying in 5 seconds...';
+        sleep 5;
+      done;
+      echo 'MinIO is ready. Creating buckets...';
+      /usr/bin/mc mb myminio/${S3_BUCKET_DATASET} --ignore-existing;
+      /usr/bin/mc mb myminio/${S3_BUCKET_INFERENCES_RESULTS} --ignore-existing;
+      /usr/bin/mc policy set public myminio/${S3_BUCKET_DATASET};
+      /usr/bin/mc policy set public myminio/${S3_BUCKET_INFERENCES_RESULTS};
+      echo 'Buckets created successfully';
+      exit 0;
+      "
+
+  # Nginx Reverse Proxy (Optional for production)
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - neural-api
+    networks:
+      - neural_network
+    restart: always
+
+networks:
+  neural_network:
+    driver: bridge
+
+volumes:
+  minio_data:
+    driver: local
+  neural_api_temp:
+    driver: local
+  neural_api_logs:
+    driver: local
