@@ -7,7 +7,7 @@ if not os.path.exists("*.yaml"):
     raise FileNotFoundError("No YAML configuration files found in the current directory.")
 
 results = model.train(
-    data = os.getenv('MODEL_YAML_PATH'),
+    data = os.getenv('MODEL_YAML_PATH'), # TODO: Replace with S3 path instead of local
     epochs = 100,
     imgsz = 640,
     patience = 10,

@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Blueprint, request, jsonify
 from .cloud_services.minio_connection import getMinioClient
 #from .rescale import *
+from .inference_service.inference import InferenceService
 
 from .security.decorators import check_auth
 
@@ -21,47 +22,51 @@ CARPETA_TEMPORAL = SRC_DIR / "temp_images"
 os.makedirs(CARPETA_TEMPORAL, exist_ok=True)
 
 # Setup model's weights and the script that executes the eval()
-WEIGHT_PATH = (SRC_DIR / ".." / ".." / "weights" / "best_mae.pth").resolve()  # Ruta de los pesos del modelo
-RUN_TEST_PATH = (SRC_DIR / ".." / ".." / "run_test.py").resolve() # Ruta del script que ejecuta la inferencia
+#WEIGHT_PATH = (SRC_DIR / ".." / ".." / "weights" / "best_mae.pth").resolve()  # Ruta de los pesos del modelo
+#RUN_TEST_PATH = (SRC_DIR / ".." / ".." / "run_test.py").resolve() # Ruta del script que ejecuta la inferencia
 
 # Interface that executes the inference
-def ejecutar_inferencia(rescaled_img_path, output_path):
-    # construct cmd to execute run_test.py
-    cmd = [
-        "python3", str(RUN_TEST_PATH),
-        "--weight_path", str(WEIGHT_PATH),
-        "--output_dir", str(output_path),
-        "--img", str(rescaled_img_path)  # Usar la imagen reescalada
-    ]
+# def ejecutar_inferencia(rescaled_img_path, output_path):
+#     # construct cmd to execute run_test.py
+#     cmd = [
+#         "python3", str(RUN_TEST_PATH),
+#         "--weight_path", str(WEIGHT_PATH),
+#         "--output_dir", str(output_path),
+#         "--img", str(rescaled_img_path)  # Usar la imagen reescalada
+#     ]
 
-    # Executes the inference
-    try:
-        # Execute it as a group of commands
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+#     # Executes the inference
+#     try:
+#         # Execute it as a group of commands
+#         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
 
-        # Captures stdout y stderr, with timeout of 60s
-        stdout, stderr = p.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        # If timeout reached terminate process & its group
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+#         # Captures stdout y stderr, with timeout of 60s
+#         stdout, stderr = p.communicate(timeout=60)
+#     except subprocess.TimeoutExpired:
+#         # If timeout reached terminate process & its group
+#         os.killpg(os.getpgid(p.pid), signal.SIGTERM)
         
-        # If 2s later its still alive, force with SIGKILL
-        try:
-            p.wait(2)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+#         # If 2s later its still alive, force with SIGKILL
+#         try:
+#             p.wait(2)
+#         except subprocess.TimeoutExpired:
+#             os.killpg(os.getpgid(p.pid), signal.SIGKILL)
 
-        # After all rethrow exception
-        raise TimeoutError("Inference timeout reached")
+#         # After all rethrow exception
+#         raise TimeoutError("Inference timeout reached")
 
-    except Exception as exc:
-        raise exc
+#     except Exception as exc:
+#         raise exc
 
-    # Verify the stdout return code
-    if p.returncode != 0:
-        raise RuntimeError(f"RuntimeError: {stderr}")
+#     # Verify the stdout return code
+#     if p.returncode != 0:
+#         raise RuntimeError(f"RuntimeError: {stderr}")
 
-
+def execute_inference(image_path, output_path):
+    # TODO: Receive the image path and output path from the request
+    print("Executing inference...", flush=True)
+    service = InferenceService() # Singleton
+    service.predict(image_path, output_path)
 
 """
 ------------------------
@@ -76,7 +81,7 @@ inference = Blueprint('inference', __name__, url_prefix='/')
 @check_auth
 def inferencia():
     """
-    Endpoint para ejecutar la inferencia usando run_test.py.
+    Endpoint para ejecutar la inferencia.
     """
     # Obtener los datos de la solicitud
     datos = request.json
@@ -109,24 +114,8 @@ def inferencia():
             print(f"Error downloading image {object_path} from MinIO: {e}", flush=True)
             return jsonify({"error": f"Error downloading image {object_path} from MinIO"}), 500
 
-        # Reescala la imagen descargada y guarda la ruta donde se almacenó
-        #ruta_imagen_reescalada = redimensionar_imagen_y_coordenadas( str(tem_hash), nombre_archivo )
-
-        # TODO: Ejecuta la inferencia con la imagen reescalada y guarda el resultado en tem_hash
         try:
-            print(f"[PLACEHOLDER] Simulando inferencia para: {download_path}", flush=True)
-            
-            # PLACEHOLDER: Create a dummy result file for testing connections
-            ruta_resultado = (tem_hash / "inference_result.jpg").resolve()
-            
-            # Copy the original image as the "result" for now
-            import shutil
-            shutil.copy2(download_path, ruta_resultado)
-            print(f"[PLACEHOLDER] Resultado simulado creado en: {ruta_resultado}", flush=True)
-            
-            # TODO: Replace with actual inference execution:
-            # ejecutar_inferencia(str(download_path), str(tem_hash))
-            
+            execute_inference(download_path, tem_hash / "inference_result.jpg")
         except Exception as exc:
             print(f"Error executing inference {object_path}: {str(exc)}", flush=True)
             return jsonify({"error": f"Error ejecutando inferencia {object_path}: {str(exc)}"}), 500
@@ -149,7 +138,7 @@ def inferencia():
             print(f"Error subiendo resultado a MinIO: {str(upload_error)}", flush=True)
             return jsonify({"error": f"Error subiendo resultado a MinIO: {str(upload_error)}"}), 500
 
-        # Eliminar las imágenes temporales después de usarlas (opcional)
+        # Eliminar las imágenes temporales después de usarlas
         try:
             os.remove(download_path)
             os.remove(ruta_resultado)
