@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 from flask import Blueprint, request, jsonify
 from .cloud_services.minio_connection import getMinioClient
-#from .rescale import *
 from .inference_service.inference import InferenceService
 
 from .security.decorators import check_auth
@@ -21,49 +20,7 @@ SRC_DIR = Path(__file__).resolve().parent
 CARPETA_TEMPORAL = SRC_DIR / "temp_images"
 os.makedirs(CARPETA_TEMPORAL, exist_ok=True)
 
-# Setup model's weights and the script that executes the eval()
-#WEIGHT_PATH = (SRC_DIR / ".." / ".." / "weights" / "best_mae.pth").resolve()  # Ruta de los pesos del modelo
-#RUN_TEST_PATH = (SRC_DIR / ".." / ".." / "run_test.py").resolve() # Ruta del script que ejecuta la inferencia
-
-# Interface that executes the inference
-# def ejecutar_inferencia(rescaled_img_path, output_path):
-#     # construct cmd to execute run_test.py
-#     cmd = [
-#         "python3", str(RUN_TEST_PATH),
-#         "--weight_path", str(WEIGHT_PATH),
-#         "--output_dir", str(output_path),
-#         "--img", str(rescaled_img_path)  # Usar la imagen reescalada
-#     ]
-
-#     # Executes the inference
-#     try:
-#         # Execute it as a group of commands
-#         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
-
-#         # Captures stdout y stderr, with timeout of 60s
-#         stdout, stderr = p.communicate(timeout=60)
-#     except subprocess.TimeoutExpired:
-#         # If timeout reached terminate process & its group
-#         os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-        
-#         # If 2s later its still alive, force with SIGKILL
-#         try:
-#             p.wait(2)
-#         except subprocess.TimeoutExpired:
-#             os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-
-#         # After all rethrow exception
-#         raise TimeoutError("Inference timeout reached")
-
-#     except Exception as exc:
-#         raise exc
-
-#     # Verify the stdout return code
-#     if p.returncode != 0:
-#         raise RuntimeError(f"RuntimeError: {stderr}")
-
 def execute_inference(image_path, output_path):
-    # TODO: Receive the image path and output path from the request
     print("Executing inference...", flush=True)
     service = InferenceService() # Singleton
     service.predict(image_path, output_path)

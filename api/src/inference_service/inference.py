@@ -17,9 +17,8 @@ class InferenceService:
     def _load_model(self):
         try:
             from ultralytics import YOLO
-            print("Current path:", Path.cwd(), flush=True)
-            print("Files in current directory:", os.listdir(Path.cwd()), flush=True) # TODO: Need to mount the model in the container
-            model_path = Path("/app/api/best.pt") # TODO: Update so the path is dynamic
+            root_dir = Path(__file__).resolve().parent.parent.parent.parent
+            model_path = root_dir / "weights" / "best.pt" # Should be /app/weights/{model_name}.pt
             self._model = YOLO(str(model_path))
             print(f"Model loaded successfully from {model_path}", flush=True)
         except Exception as e:
