@@ -1,7 +1,5 @@
 import os
-import sys
-import signal
-import subprocess
+import json
 from pathlib import Path
 from flask import Blueprint, request, jsonify
 from .cloud_services.minio_connection import getMinioClient
@@ -23,7 +21,27 @@ os.makedirs(CARPETA_TEMPORAL, exist_ok=True)
 def execute_inference(image_path, output_path):
     print("Executing inference...", flush=True)
     service = InferenceService() # Singleton
-    service.predict(image_path, output_path)
+    boxes = service.predict(image_path, output_path)
+    return boxes
+
+def prepare_metadata(temp_hash, metadata_object_path, metadata):
+    try:
+        metadata_path = temp_hash / "metadata.json"  # temp_hash is already a Path object
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Fix the metadata format - original_size is a tuple (height, width)
+        original_size = metadata['image_info']['original_size']
+        basic_metadata = {
+            'detection-count': str(metadata['detection_count']),
+            'original-width': str(original_size[1]) if original_size else '0',  # width is index 1
+            'original-height': str(original_size[0]) if original_size else '0',  # height is index 0
+            'detailed-metadata': metadata_object_path
+        }
+    except Exception as e:
+        print(f"Error saving metadata: {e}", flush=True)
+        raise e  # Re-raise the exception instead of returning jsonify
+    return metadata_path, basic_metadata
 
 """
 ------------------------
@@ -72,7 +90,7 @@ def inferencia():
             return jsonify({"error": f"Error downloading image {object_path} from MinIO"}), 500
 
         try:
-            execute_inference(download_path, tem_hash / "inference_result.jpg")
+            metadata = execute_inference(download_path, tem_hash / "inference_result.jpg")
         except Exception as exc:
             print(f"Error executing inference {object_path}: {str(exc)}", flush=True)
             return jsonify({"error": f"Error ejecutando inferencia {object_path}: {str(exc)}"}), 500
@@ -87,10 +105,13 @@ def inferencia():
 
         # Subir la imagen de resultado al bucket de MinIO
         object_path_resultado = f"{id_base_dir}/inference_result.jpg" # Path en el bucket donde se almacena el resultado
+        metadata_object_path = f"{id_base_dir}/metadata.json" # Path en el bucket donde se almacena el metadata
         print(f"Subiendo imagen de resultado a MinIO: {bucket_name}/{object_path_resultado}", flush=True)
         try:
-            minioClient.fput_object(bucket_name, object_path_resultado, str(ruta_resultado))
+            metadata_path, basic_metadata = prepare_metadata(tem_hash, metadata_object_path, metadata)
+            minioClient.fput_object(bucket_name, object_path_resultado, str(ruta_resultado), metadata=basic_metadata)
             print(f"Imagen de resultado subida a: {bucket_name}/{object_path_resultado}", flush=True)
+            minioClient.fput_object(bucket_name, metadata_object_path, str(metadata_path))
         except Exception as upload_error:
             print(f"Error subiendo resultado a MinIO: {str(upload_error)}", flush=True)
             return jsonify({"error": f"Error subiendo resultado a MinIO: {str(upload_error)}"}), 500
@@ -99,14 +120,18 @@ def inferencia():
         try:
             os.remove(download_path)
             os.remove(ruta_resultado)
+            os.remove(metadata_path)  # Add this line to remove metadata file
             os.rmdir(tem_hash)
             print(f"Archivos temporales eliminados exitosamente", flush=True)
         except Exception as cleanup_error:
             print(f"Warning: Error durante limpieza: {str(cleanup_error)}", flush=True)
 
         # Devolver el full path del bucket donde se encuentra la imagen de resultado
-        return jsonify({"generatedImgUrl": f"{live_url + bucket_name}/{object_path_resultado}"}), 200
-
+        response_data = {
+            "generatedImgUrl": f"{live_url + bucket_name}/{object_path_resultado}",
+            "metadataUrl": f"{live_url + bucket_name}/{metadata_object_path}"
+        }
+        return jsonify(response_data), 200
     except Exception as e:
         print(f"Error generating inference for {object_path}")
         return jsonify({"error": f"Error generating an inference for {object_path}"}), 500

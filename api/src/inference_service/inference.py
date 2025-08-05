@@ -52,5 +52,48 @@ class InferenceService:
         print(f"Receiving from image path: {image_path}", flush=True)
         print(f"Saving results to {output_path}", flush=True)
         results = self._model(image_path)
+        
+        metadata = {
+            'detection_count': 0,
+            'detections': [],
+            'image_info': {
+                'original_size': None,
+                'processed_size': None
+            }
+        }
+        
         for result in results:
+            boxes = result.boxes
+            if boxes is not None:
+                metadata['detection_count'] = len(boxes)
+                metadata['image_info']['original_size'] = boxes.orig_shape  # (height, width)
+                
+                # Extract detection details
+                for i in range(len(boxes)):
+                    detection = {
+                        'bbox': {
+                            'x1': float(boxes.xyxy[i][0]),
+                            'y1': float(boxes.xyxy[i][1]), 
+                            'x2': float(boxes.xyxy[i][2]),
+                            'y2': float(boxes.xyxy[i][3])
+                        },
+                        'bbox_normalized': {
+                            'x1': float(boxes.xyxyn[i][0]),
+                            'y1': float(boxes.xyxyn[i][1]),
+                            'x2': float(boxes.xyxyn[i][2]),
+                            'y2': float(boxes.xyxyn[i][3])
+                        },
+                        'center_point': {
+                            'x': float(boxes.xywh[i][0]),
+                            'y': float(boxes.xywh[i][1]),
+                            'width': float(boxes.xywh[i][2]),
+                            'height': float(boxes.xywh[i][3])
+                        },
+                        'confidence': float(boxes.conf[i]),
+                        'class_id': int(boxes.cls[i]),
+                        'area': float(boxes.xywh[i][2] * boxes.xywh[i][3])
+                    }
+                    metadata['detections'].append(detection)
+            
             result.save(filename=output_path)
+        return metadata

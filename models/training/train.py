@@ -6,6 +6,7 @@ model = YOLO("yolov8n.pt")  # Load a pretrained YOLOv8n model
 if not os.path.exists("*.yaml"):
     raise FileNotFoundError("No YAML configuration files found in the current directory.")
 
+# TODO: Save results on the weights directory
 results = model.train(
     data = os.getenv('MODEL_YAML_PATH'), # TODO: Replace with S3 path instead of local
     epochs = 100,
