@@ -142,7 +142,6 @@ dmypy.json
 *.weights
 *.bin
 checkpoints/
-models/
 trained_models/
 data/
 datasets/

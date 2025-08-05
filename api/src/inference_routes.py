@@ -1,11 +1,10 @@
 import os
-import sys
-import signal
-import subprocess
+import json
+import re
 from pathlib import Path
 from flask import Blueprint, request, jsonify
 from .cloud_services.minio_connection import getMinioClient
-#from .rescale import *
+from .inference_service.inference import InferenceService
 
 from .security.decorators import check_auth
 
@@ -13,54 +12,144 @@ from .security.decorators import check_auth
 from dotenv import load_dotenv
 load_dotenv()
 
-# Obtiene la ruta del directorio padre donde se encuentra este archivo, osea src
+# Get the path of the parent directory where this file is located (src)
 SRC_DIR = Path(__file__).resolve().parent
 
-# Carpeta temporal para guardar las imágenes descargadas
-CARPETA_TEMPORAL = SRC_DIR / "temp_images"
-os.makedirs(CARPETA_TEMPORAL, exist_ok=True)
+# Temporary folder to save downloaded images
+TEMP_IMAGES_DIR = SRC_DIR / "temp_images"
+os.makedirs(TEMP_IMAGES_DIR, exist_ok=True)
 
-# Setup model's weights and the script that executes the eval()
-WEIGHT_PATH = (SRC_DIR / ".." / ".." / "weights" / "best_mae.pth").resolve()  # Ruta de los pesos del modelo
-RUN_TEST_PATH = (SRC_DIR / ".." / ".." / "run_test.py").resolve() # Ruta del script que ejecuta la inferencia
 
-# Interface that executes the inference
-def ejecutar_inferencia(rescaled_img_path, output_path):
-    # construct cmd to execute run_test.py
-    cmd = [
-        "python3", str(RUN_TEST_PATH),
-        "--weight_path", str(WEIGHT_PATH),
-        "--output_dir", str(output_path),
-        "--img", str(rescaled_img_path)  # Usar la imagen reescalada
-    ]
+def execute_inference(image_path, output_path):
+    """Execute inference on the provided image."""
+    print("Executing inference...", flush=True)
+    service = InferenceService()  # Singleton
+    boxes = service.predict(image_path, output_path)
+    return boxes
 
-    # Executes the inference
+
+def prepare_metadata(temp_dir, metadata_object_path, metadata):
+    """Prepare and save metadata to a JSON file."""
     try:
-        # Execute it as a group of commands
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        # temp_dir is already a Path object
+        metadata_path = temp_dir / "metadata.json"
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
 
-        # Captures stdout y stderr, with timeout of 60s
-        stdout, stderr = p.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        # If timeout reached terminate process & its group
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-        
-        # If 2s later its still alive, force with SIGKILL
-        try:
-            p.wait(2)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        # Fix the metadata format - original_size is a tuple (height, width)
+        original_size = metadata['image_info']['original_size']
+        basic_metadata = {
+            'detection-count': str(metadata['detection_count']),
+            # width is index 1
+            'original-width': (str(original_size[1])
+                               if original_size else '0'),
+            # height is index 0
+            'original-height': (str(original_size[0])
+                                if original_size else '0'),
+            'detailed-metadata': metadata_object_path
+        }
+    except Exception as e:
+        print(f"Error saving metadata: {e}", flush=True)
+        raise e  # Re-raise the exception instead of returning jsonify
+    return metadata_path, basic_metadata
 
-        # After all rethrow exception
-        raise TimeoutError("Inference timeout reached")
 
-    except Exception as exc:
-        raise exc
+def download_image_from_minio(bucket_name, object_path, download_path):
+    """Download image from MinIO storage."""
+    print(f"Connecting to MinIO to download image: "
+          f"{bucket_name}/{object_path}", flush=True)
+    minio_client = getMinioClient()
 
-    # Verify the stdout return code
-    if p.returncode != 0:
-        raise RuntimeError(f"RuntimeError: {stderr}")
+    try:
+        print(f"Downloading image from MinIO: "
+              f"{bucket_name}/{object_path}", flush=True)
+        minio_client.fget_object(bucket_name, str(object_path),
+                                 str(download_path))
+        print(f"Image downloaded to: {download_path.parent}", flush=True)
+    except Exception as e:
+        print(f"Error downloading image {object_path} from MinIO: {e}",
+              flush=True)
+        raise Exception(f"Error downloading image {object_path} from MinIO")
 
+
+def upload_results_to_minio(bucket_name, result_image_path, metadata_path,
+                            result_object_path, metadata_object_path,
+                            basic_metadata):
+    """Upload inference results and metadata to MinIO storage."""
+    minio_client = getMinioClient()
+
+    print(f"Uploading result image to MinIO: "
+          f"{bucket_name}/{result_object_path}", flush=True)
+    try:
+        minio_client.fput_object(bucket_name, result_object_path,
+                                 str(result_image_path),
+                                 metadata=basic_metadata)
+        print(f"Result image uploaded to: "
+              f"{bucket_name}/{result_object_path}", flush=True)
+        minio_client.fput_object(bucket_name, metadata_object_path,
+                                 str(metadata_path))
+    except Exception as upload_error:
+        print(f"Error uploading result to MinIO: {str(upload_error)}",
+              flush=True)
+        raise Exception(f"Error uploading result to MinIO: "
+                        f"{str(upload_error)}")
+
+
+def cleanup_temp_files(file_paths, temp_dir):
+    """Clean up temporary files and directory."""
+    try:
+        for file_path in file_paths:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+        if temp_dir.exists() and temp_dir.is_dir():
+            os.rmdir(temp_dir)
+
+        print("Temporary files cleaned up successfully", flush=True)
+    except Exception as cleanup_error:
+        print(f"Warning: Error during cleanup: {str(cleanup_error)}",
+              flush=True)
+
+
+def validate_request_data(request_data):
+    """Validate the incoming request data."""
+    if not request_data:
+        raise ValueError("Request data is required")
+
+    object_path = request_data.get('imgObjectKey')
+    if not object_path:
+        raise ValueError("imgObjectKey is required")
+    
+    # Sanitize object path to prevent directory traversal
+    if '..' in object_path or object_path.startswith('/'):
+        raise ValueError("Invalid object path")
+    
+    # Allow only alphanumeric, hyphens, underscores, dots, and forward slashes
+    if not re.match(r'^[a-zA-Z0-9\-_./]+$', object_path):
+        raise ValueError("Object path contains invalid characters")
+
+    return object_path
+
+
+def setup_temp_directory(object_path):
+    """Set up temporary directory structure for processing."""
+    base_dir_id = object_path.split('/')[0]
+    
+    # Sanitize directory name
+    if not re.match(r'^[a-zA-Z0-9\-_]+$', base_dir_id):
+        raise ValueError("Invalid directory name")
+    
+    filename = "original_img.jpg"
+    temp_dir = (TEMP_IMAGES_DIR / base_dir_id).resolve()
+    
+    # Ensure temp_dir is within TEMP_IMAGES_DIR
+    if not str(temp_dir).startswith(str(TEMP_IMAGES_DIR.resolve())):
+        raise ValueError("Invalid temporary directory path")
+
+    os.makedirs(temp_dir, exist_ok=True)
+    download_path = (temp_dir / filename).resolve()
+
+    return temp_dir, download_path, base_dir_id
 
 
 """
@@ -71,96 +160,77 @@ Below this the blueprint and the endpoints are declared
 # Setup blueprint
 inference = Blueprint('inference', __name__, url_prefix='/')
 
-# Setup inferencia endpoint
+
+# Setup inference endpoint
 @inference.route('/inferencia', methods=['POST'])
 @check_auth
-def inferencia():
+def run_inference():
     """
-    Endpoint para ejecutar la inferencia usando run_test.py.
+    Endpoint to execute inference on an image.
     """
-    # Obtener los datos de la solicitud
-    datos = request.json
-    bucket_name = os.environ.get('S3_BUCKET_INFERENCES_RESULTS')  # Nombre del bucket en MinIO
-    object_path = datos.get('imgObjectKey')  # Path del objeto (imagen) en MinIO 'folder_name/imagen.jpg'
-    live_url = os.environ.get('S3_LIVE_BASE_URL') # URL base que se usa para generar la url asociada a una imagen
-
-    # Verifica los parámetros del request
-    if not object_path:
-        return jsonify({"error": "Se requieren bucket_name y object_path"}), 400
-
     try:
-        # Configura la carpeta y nombre de archivo donde se descargará la imagen
-        id_base_dir=object_path.split('/')[0]
-        nombre_archivo ="original_img.jpg"
-        tem_hash = (CARPETA_TEMPORAL / id_base_dir).resolve() # Carpeta temporal para guardar las imágenes descargadas la imagen base y la inferencia
+        # Validate request data
+        request_data = request.json
+        object_path = validate_request_data(request_data)
 
-        # Asegurarse de que la carpeta de destino exista
-        os.makedirs(os.path.dirname(tem_hash), exist_ok=True)
-        download_path = (tem_hash / nombre_archivo).resolve() #full path de la imagen que sera descargada para la inferencia
+        # Get environment variables
+        bucket_name = os.environ.get('S3_BUCKET_INFERENCES_RESULTS')
+        live_url = os.environ.get('S3_LIVE_BASE_URL')
 
-        # Descargar el archivo usando la conexión 
-        print(f"Conectando a MinIO para descargar la imagen: {bucket_name}/{object_path}", flush=True)
-        minioClient = getMinioClient()
+        # Setup temporary directory and paths
+        temp_dir, download_path, base_dir_id = setup_temp_directory(
+            object_path)
+
+        # Download image from MinIO
+        download_image_from_minio(bucket_name, object_path, download_path)
+
+        # Execute inference
+        result_image_path = temp_dir / "inference_result.jpg"
         try:
-            print(f"Descargando imagen de MinIO: {bucket_name}/{object_path}", flush=True)
-            minioClient.fget_object( bucket_name, str(object_path), str(download_path) )
-            print(f"Imagen descargada en: {tem_hash}", flush=True)
-        except Exception as e:
-            print(f"Error downloading image {object_path} from MinIO: {e}", flush=True)
-            return jsonify({"error": f"Error downloading image {object_path} from MinIO"}), 500
-
-        # Reescala la imagen descargada y guarda la ruta donde se almacenó
-        #ruta_imagen_reescalada = redimensionar_imagen_y_coordenadas( str(tem_hash), nombre_archivo )
-
-        # TODO: Ejecuta la inferencia con la imagen reescalada y guarda el resultado en tem_hash
-        try:
-            print(f"[PLACEHOLDER] Simulando inferencia para: {download_path}", flush=True)
-            
-            # PLACEHOLDER: Create a dummy result file for testing connections
-            ruta_resultado = (tem_hash / "inference_result.jpg").resolve()
-            
-            # Copy the original image as the "result" for now
-            import shutil
-            shutil.copy2(download_path, ruta_resultado)
-            print(f"[PLACEHOLDER] Resultado simulado creado en: {ruta_resultado}", flush=True)
-            
-            # TODO: Replace with actual inference execution:
-            # ejecutar_inferencia(str(download_path), str(tem_hash))
-            
+            metadata = execute_inference(download_path, result_image_path)
         except Exception as exc:
-            print(f"Error executing inference {object_path}: {str(exc)}", flush=True)
-            return jsonify({"error": f"Error ejecutando inferencia {object_path}: {str(exc)}"}), 500
+            print(f"Error executing inference {object_path}: {str(exc)}",
+                  flush=True)
+            error_msg = f"Error executing inference {object_path}: {str(exc)}"
+            return jsonify({"error": error_msg}), 500
 
-        # Obtener el path de la imagen de resultado
-        print(f"Obteniendo imagen de resultado de la inferencia en: {tem_hash}", flush=True)
-        ruta_resultado = (tem_hash / "inference_result.jpg").resolve()
-        print(f"Imagen de resultado esperada en: {ruta_resultado}", flush=True)
-        if not os.path.exists(ruta_resultado):
-            print(f"Error: No se encontró la imagen de resultado en: {ruta_resultado}", flush=True)
-            return jsonify({"error": "No se encontró la imagen de resultado"}), 500
+        # Verify result image exists
+        if not result_image_path.exists():
+            print(f"Error: Result image not found at: {result_image_path}",
+                  flush=True)
+            return jsonify({"error": "Result image not found"}), 500
 
-        # Subir la imagen de resultado al bucket de MinIO
-        object_path_resultado = f"{id_base_dir}/inference_result.jpg" # Path en el bucket donde se almacena el resultado
-        print(f"Subiendo imagen de resultado a MinIO: {bucket_name}/{object_path_resultado}", flush=True)
-        try:
-            minioClient.fput_object(bucket_name, object_path_resultado, str(ruta_resultado))
-            print(f"Imagen de resultado subida a: {bucket_name}/{object_path_resultado}", flush=True)
-        except Exception as upload_error:
-            print(f"Error subiendo resultado a MinIO: {str(upload_error)}", flush=True)
-            return jsonify({"error": f"Error subiendo resultado a MinIO: {str(upload_error)}"}), 500
+        # Prepare paths for MinIO upload
+        result_object_path = f"{base_dir_id}/inference_result.jpg"
+        metadata_object_path = f"{base_dir_id}/metadata.json"
 
-        # Eliminar las imágenes temporales después de usarlas (opcional)
-        try:
-            os.remove(download_path)
-            os.remove(ruta_resultado)
-            os.rmdir(tem_hash)
-            print(f"Archivos temporales eliminados exitosamente", flush=True)
-        except Exception as cleanup_error:
-            print(f"Warning: Error durante limpieza: {str(cleanup_error)}", flush=True)
+        # Prepare and save metadata
+        metadata_path, basic_metadata = prepare_metadata(
+            temp_dir, metadata_object_path, metadata)
 
-        # Devolver el full path del bucket donde se encuentra la imagen de resultado
-        return jsonify({"generatedImgUrl": f"{live_url + bucket_name}/{object_path_resultado}"}), 200
+        # Upload results to MinIO
+        upload_results_to_minio(
+            bucket_name, result_image_path, metadata_path,
+            result_object_path, metadata_object_path, basic_metadata
+        )
 
+        # Clean up temporary files
+        temp_files = [download_path, result_image_path, metadata_path]
+        cleanup_temp_files(temp_files, temp_dir)
+
+        # Return response with URLs
+        base_url = f"{live_url + bucket_name}"
+        response_data = {
+            "generatedImgUrl": f"{base_url}/{result_object_path}",
+            "metadataUrl": f"{base_url}/{metadata_object_path}"
+        }
+        return jsonify(response_data), 200
+
+    except ValueError as ve:
+        print(f"Validation error: {str(ve)}", flush=True)
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
-        print(f"Error generating inference for {object_path}")
-        return jsonify({"error": f"Error generating an inference for {object_path}"}), 500
+        obj_path = object_path if 'object_path' in locals() else 'unknown'
+        print(f"Error generating inference for {obj_path}: {str(e)}",
+              flush=True)
+        return jsonify({"error": f"Error generating inference: {str(e)}"}), 500

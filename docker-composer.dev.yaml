@@ -10,10 +10,10 @@ services:
       - "8080:5000"
     volumes:
       # Mount source code for hot reloading
-      - ./api:/app/api
-      # - ./weights:/app/weights
+      - ./api:/app/api:ro
+      - ./models/weights:/app/weights:ro
       # - ./run_test.py:/app/run_test.py
-      - ./.env:/app/.env
+      - ./.env:/app/.env:ro
       # Mount for temporary files (persistent across container restarts)
       - neural_api_temp:/app/api/src/temp_images
     environment:
@@ -25,60 +25,6 @@ services:
     networks:
       - neural_network
     restart: unless-stopped
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:5000/"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 40s
-
-  # # MinIO Object Storage Service
-  # minio:
-  #   image: minio/minio:latest
-  #   container_name: minio-dev
-  #   ports:
-  #     - "9000:9000"
-  #     - "9001:9001"  # MinIO Console
-  #   volumes:
-  #     - minio_data:/data
-  #   environment:
-  #     MINIO_ROOT_USER: myappuser
-  #     MINIO_ROOT_PASSWORD: mysecretpassword
-  #   command: server /data --console-address ":9001"
-  #   networks:
-  #     - neural_network
-  #   restart: unless-stopped
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-  #     interval: 30s
-  #     timeout: 20s
-  #     retries: 3
-
-  # # MinIO Client for bucket setup
-  # minio-setup:
-  #   image: minio/mc:latest
-  #   container_name: minio-setup-dev
-  #   depends_on:
-  #     - minio
-  #   volumes:
-  #     - ./scripts:/scripts
-  #   networks:
-  #     - neural_network
-  #   entrypoint: >
-  #     /bin/sh -c "
-  #     echo 'Waiting for MinIO to be ready...';
-  #     until /usr/bin/mc alias set myminio http://minio:9000 myappuser mysecretpassword; do
-  #       echo 'MinIO not ready, retrying in 5 seconds...';
-  #       sleep 5;
-  #     done;
-  #     echo 'MinIO is ready. Creating buckets...';
-  #     /usr/bin/mc mb myminio/dataset --ignore-existing;
-  #     /usr/bin/mc mb myminio/inferences --ignore-existing;
-  #     /usr/bin/mc policy set public myminio/dataset;
-  #     /usr/bin/mc policy set public myminio/inferences;
-  #     echo 'Buckets created successfully';
-  #     exit 0;
-  #     "
 
 networks:
   neural_network:

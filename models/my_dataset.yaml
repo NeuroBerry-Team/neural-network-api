@@ -1,0 +1,13 @@
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: my_dataset
+train: images 
+val: images
+# test:
+
+# Classes
+names:
+  0: Boton
+  1: BrightRed C4
+  2: DarkRed C5
+  3: Green
+  4: Orange(red dot)
