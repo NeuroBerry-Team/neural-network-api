@@ -1,53 +1,26 @@
-# Development Dockerfile
 FROM python:3.9-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install only essential system dependencies for pip and basic image processing
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
     build-essential \
     libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libavcodec-dev \
-    libavformat-dev \
-    libswscale-dev \
-    libv4l-dev \
-    libxvidcore-dev \
-    libx264-dev \
     libjpeg-dev \
     libpng-dev \
-    libtiff-dev \
-    libatlas-base-dev \
-    gfortran \
-    wget \
-    curl \
-    vim \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install development dependencies
-RUN pip install --no-cache-dir flask-debugtoolbar watchdog
+# Create necessary directories (if needed)
+RUN mkdir -p /tmp/temp_images
 
-# Create necessary directories
-RUN mkdir -p /app/api/src/temp_images
-
-# Set environment variables for development
 ENV PYTHONPATH=/app
-ENV FLASK_APP=api/run.py
-ENV FLASK_ENV=development
-ENV FLASK_DEBUG=1
 
-# Expose port 5000
 EXPOSE 5000
 
-# Run with development server and auto-reload
-CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000", "--reload"]

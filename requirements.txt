@@ -1,5 +1,5 @@
-Flask==2.3.3
-Flask-CORS==4.0.0
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
 PyJWT==2.8.0
 python-dotenv==1.0.0
 minio==7.1.17
