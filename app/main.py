@@ -18,4 +18,4 @@ try:
 except Exception as e:
     print(f"Error loading AI model: {e}", flush=True)
 
-app.include_router(api_router, prefix="/api/v1")
+app.include_router(api_router)
