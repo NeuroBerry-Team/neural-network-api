@@ -39,13 +39,27 @@ def validate_request_data(request_data):
     return object_path
 
 def setup_temp_directory(object_path, temp_images_dir):
-    base_dir_id = object_path.split('/')[0]
-    if not re.match(r'^[a-zA-Z0-9\-_]+$', base_dir_id):
-        raise ValueError("Invalid directory name")
+    # Extract the directory path (everything except the filename)
+    # For "1/abc123-uuid/original_img.jpg" -> get "1/abc123-uuid"
+    path_parts = object_path.split('/')
+    if len(path_parts) < 2:
+        raise ValueError("Invalid object path structure")
+    
+    # Get the directory path without the filename
+    base_dir_path = '/'.join(path_parts[:-1])  # "1/abc123-uuid"
+    
+    # Validate the directory path
+    if not re.match(r'^[a-zA-Z0-9\-_/]+$', base_dir_path):
+        raise ValueError("Invalid directory path")
+    
     filename = "original_img.jpg"
-    temp_dir = (temp_images_dir / base_dir_id).resolve()
+    
+    # Create temp directory matching the S3 structure
+    temp_dir = (temp_images_dir / base_dir_path).resolve()
     if not str(temp_dir).startswith(str(temp_images_dir.resolve())):
         raise ValueError("Invalid temporary directory path")
+    
     os.makedirs(temp_dir, exist_ok=True)
     download_path = (temp_dir / filename).resolve()
-    return temp_dir, download_path, base_dir_id
+    
+    return temp_dir, download_path, base_dir_path  # Return full path
