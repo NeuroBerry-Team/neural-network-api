@@ -18,9 +18,14 @@ class InferenceService:
     def _load_model(self):
         try:
             from ultralytics import YOLO
-            root_dir = Path(__file__).resolve().parent.parent.parent.parent
-            # Should be /app/weights/{model_name}.pt
-            model_path = root_dir / "weights" / "best.pt"
+            # Load model from the new models directory
+            model_path = Path("/models/weights/best.pt")
+            
+            # Fallback to the old app structure if new path doesn't exist
+            if not model_path.exists():
+                root_dir = Path(__file__).resolve().parent.parent.parent.parent
+                model_path = root_dir / "weights" / "best.pt"
+            
             self._model = YOLO(str(model_path))
             print(f"Model loaded successfully from {model_path}", flush=True)
         except Exception as e:

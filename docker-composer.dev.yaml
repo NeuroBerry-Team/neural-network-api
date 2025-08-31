@@ -9,14 +9,16 @@ services:
     ports:
       - "8080:5000"
     volumes:
-      # Mount FastAPI source code for hot reloading
+      # Mount FastAPI source code for hot reloading (completely read-only)
       - .:/app:ro
-      - ./app/models/weights:/weights
+      # Mount models directory for weights, configs, and temp files (writable)
+      - ./models:/models
       # Mount for temporary files (persistent across container restarts)
       - neural_api_temp:/tmp/temp_images
     environment:
       - PYTHONPATH=/app
       - TEMP_IMAGES_DIR=/tmp/temp_images
+      - S3_BUCKET_DATASETS=datasets
     env_file:
       - .env
     networks:

@@ -199,3 +199,6 @@ jwt_secret*
 # Local development files
 local_config.py
 dev_settings.py
+
+temp_configs/
+weights/

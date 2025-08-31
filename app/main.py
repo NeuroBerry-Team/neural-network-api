@@ -1,9 +1,14 @@
 from fastapi import FastAPI
+from pathlib import Path
 from app.api.v1.endpoints import router as api_router
 from app.services.inference import InferenceService
-#from app.core.logging import setup_logging
+# from app.core.logging import setup_logging
 
-#setup_logging()
+# setup_logging()
+
+# Ensure required directories exist
+Path("/models/weights").mkdir(parents=True, exist_ok=True)
+Path("/models/temp_configs").mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="Neural Network API",
