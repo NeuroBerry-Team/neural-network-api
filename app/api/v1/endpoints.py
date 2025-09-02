@@ -129,24 +129,6 @@ async def list_training_jobs(auth=Depends(check_auth)):
 
 
 @router.get("/training/{job_id}")
-async def get_training_status(job_id: str, auth=Depends(check_auth)):
-    """Get the status of a training job"""
-    try:
-        training_service = TrainingService()
-        job = training_service.get_job(job_id)
-        
-        if not job:
-            raise HTTPException(status_code=404,
-                                detail=f"Training job {job_id} not found")
-        
-        return job.to_dict()
-        
-    except Exception as e:
-        error_msg = f"Error retrieving training status: {str(e)}"
-        raise HTTPException(status_code=500, detail=error_msg)
-
-
-@router.get("/training/{job_id}")
 async def get_training_job_status(job_id: str, auth=Depends(check_auth)):
     """Get detailed status of a specific training job"""
     try:
