@@ -12,6 +12,12 @@ RUN apt-get update && \
     libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
+# For font support when drawing text on images    
+RUN apt-get update && apt-get install -y \
+fonts-dejavu-core \
+fontconfig \
+&& rm -rf /var/lib/apt/lists/*
+
 # Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
