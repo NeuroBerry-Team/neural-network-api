@@ -47,21 +47,29 @@ class InferenceService:
             pass
 
     def predict(self, image_path, output_path):
-        results = self._model(image_path)
+        results = self._model.predict(
+            source=image_path,
+            iou=0.25,  # softer NMS
+            agnostic_nms=True,
+            augment=True,
+        )
 
         metadata = {
             "detection_count": 0,
             "detections": [],
-            "image_info": {"original_size": None},
+            "image_info": {"original_size": None, "processed_size": None},
         }
 
         for result in results:
             boxes = result.boxes
-            if boxes is not None:
-                metadata["detection_count"] = len(boxes)
+            if boxes is not None and len(boxes) > 0:
                 metadata["image_info"]["original_size"] = boxes.orig_shape
+                metadata["image_info"]["processed_size"] = result.orig_shape
 
                 for i in range(len(boxes)):
+                    class_id = int(boxes.cls[i])
+                    conf = float(boxes.conf[i])
+
                     detection = {
                         "bbox": {
                             "x1": float(boxes.xyxy[i][0]),
@@ -69,10 +77,13 @@ class InferenceService:
                             "x2": float(boxes.xyxy[i][2]),
                             "y2": float(boxes.xyxy[i][3]),
                         },
-                        "confidence": float(boxes.conf[i]),
-                        "class_id": int(boxes.cls[i]),
+                        "confidence": conf,
+                        "class_id": class_id,
+                        "class_name": self._model.names[class_id],
                     }
                     metadata["detections"].append(detection)
+
+                metadata["detection_count"] = len(metadata["detections"])
 
             self._draw_custom_visualization(
                 image_path, output_path, metadata["detections"]
@@ -107,19 +118,19 @@ class InferenceService:
                     continue
 
             class_colors = {
-                0: (153, 27, 27),  # C5 DarkRed #991B1B
+                2: (153, 27, 27),  # C5 DarkRed #991B1B
                 1: (239, 68, 68),  # C4 BrightRed #EF4444
-                2: (245, 158, 11),  # C3 Orange #F59E0B
+                4: (245, 158, 11),  # C3 Orange #F59E0B
                 3: (34, 197, 94),  # C2 Green #22C55E
-                4: (107, 114, 128),  # C1 Boton (gray) #6B7280
+                0: (107, 114, 128),  # C1 Boton (gray) #6B7280
             }
 
             class_labels = {
-                0: "C5 DarkRed",
+                2: "C5 DarkRed",
                 1: "C4 BrightRed",
-                2: "C3 Orange (Red dot)",
+                4: "C3 Orange (Red dot)",
                 3: "C2 Green",
-                4: "C1 Boton",
+                0: "C1 Boton",
             }
 
             for detection in detections:
