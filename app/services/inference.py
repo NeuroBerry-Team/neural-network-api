@@ -70,12 +70,22 @@ class InferenceService:
                     class_id = int(boxes.cls[i])
                     conf = float(boxes.conf[i])
 
+                    # Get both pixel and normalized coordinates from YOLO
+                    pixel_coords = boxes.xyxy[i]  # Pixel coordinates
+                    normalized_coords = boxes.xyxyn[i]  # Normalized coordinates (0-1)
+
                     detection = {
                         "bbox": {
-                            "x1": float(boxes.xyxy[i][0]),
-                            "y1": float(boxes.xyxy[i][1]),
-                            "x2": float(boxes.xyxy[i][2]),
-                            "y2": float(boxes.xyxy[i][3]),
+                            "x1": float(pixel_coords[0]),
+                            "y1": float(pixel_coords[1]),
+                            "x2": float(pixel_coords[2]),
+                            "y2": float(pixel_coords[3]),
+                        },
+                        "bbox_normalized": {
+                            "x1": float(normalized_coords[0]),
+                            "y1": float(normalized_coords[1]),
+                            "x2": float(normalized_coords[2]),
+                            "y2": float(normalized_coords[3]),
                         },
                         "confidence": conf,
                         "class_id": class_id,
