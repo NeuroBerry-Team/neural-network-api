@@ -5,6 +5,7 @@ from pathlib import Path
 class InferenceService:
     _instance = None
     _model = None
+    _current_model_name = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -15,22 +16,37 @@ class InferenceService:
         if self._model is None:
             self._load_model()
 
-    def _load_model(self):
+    def _load_model(self, model_name="default"):
         try:
             from ultralytics import YOLO
 
-            model_path = Path("/models/weights/best.pt")
+            # Determine model path based on model name
+            if model_name == "default":
+                model_path = Path("/models/best.pt")
+                if not model_path.exists():
+                    model_path = Path("/models/weights/best.pt")
+            else:
+                model_path = Path(f"/models/weights/{model_name}.pt")
+                
             if not model_path.exists():
-                root_dir = Path(__file__).resolve().parent.parent.parent.parent
-                model_path = root_dir / "weights" / "best.pt"
+                raise FileNotFoundError(f"Model '{model_name}' not found at {model_path}")
 
             self._model = YOLO(str(model_path))
+            self._current_model_name = model_name
         except Exception as e:
-            raise RuntimeError(f"Failed to load model: {e}")
+            raise RuntimeError(f"Failed to load model {model_name}: {e}")
+    
+    def _ensure_model_loaded(self, model_name="default"):
+        """Ensure the correct model is loaded, reload if necessary"""
+        if self._current_model_name != model_name or self._model is None:
+            self._load_model(model_name)
 
     def warmup(self):
         """Warm up the model with a dummy prediction"""
         try:
+            # Ensure default model is loaded for warmup
+            self._ensure_model_loaded("default")
+            
             import torch
             from PIL import Image
             import numpy as np
@@ -46,7 +62,10 @@ class InferenceService:
         except Exception:
             pass
 
-    def predict(self, image_path, output_path):
+    def predict(self, image_path, output_path, model_name="default"):
+        # Load the appropriate model if different from current
+        self._ensure_model_loaded(model_name)
+        
         results = self._model.predict(
             source=image_path,
             iou=0.25,  # softer NMS
