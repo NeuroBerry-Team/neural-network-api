@@ -4,7 +4,6 @@ from app.services.minio_connection import get_minio_client
 from app.services.inference import InferenceService
 from app.services.training import TrainingService
 from app.services.dataset import DatasetService
-from app.services.model_manager import ModelManager
 from app.services.utils import (
     prepare_metadata,
     cleanup_temp_files,
@@ -28,10 +27,10 @@ async def run_inference(request: Request, auth=Depends(check_auth)):
     try:
         request_data = await request.json()
         object_path = validate_request_data(request_data)
-        
+
         # Get optional model name, default to "default" (best.pt)
         model_name = request_data.get("modelName", "default")
-        
+
         bucket_name = os.environ.get("S3_BUCKET_INFERENCES_RESULTS")
         live_url = os.environ.get("S3_LIVE_BASE_URL")
         temp_images_dir = Path(os.environ.get("TEMP_IMAGES_DIR", "/tmp/temp_images"))
@@ -41,16 +40,18 @@ async def run_inference(request: Request, auth=Depends(check_auth)):
         minio_client = get_minio_client()
         # Download image from MinIO
         minio_client.fget_object(bucket_name, str(object_path), str(download_path))
-        
+
         # Execute inference with specified model
         result_image_path = temp_dir / "inference_result.jpg"
         service = InferenceService()
         try:
-            metadata = service.predict(download_path, result_image_path, model_name=model_name)
+            metadata = service.predict(
+                download_path, result_image_path, model_name=model_name
+            )
         except Exception as exc:
             error_msg = f"Error executing inference {object_path} with model {model_name}: {str(exc)}"
             raise HTTPException(status_code=500, detail=error_msg)
-        
+
         if not result_image_path.exists():
             raise HTTPException(status_code=500, detail="Result image not found")
         result_object_path = f"{base_dir_id}/inference_result.jpg"
@@ -347,30 +348,35 @@ async def list_available_models(auth=Depends(check_auth)):
         # Get models from the /models/weights directory
         models_dir = Path("/models/weights")
         available_models = []
-        
+
         if models_dir.exists():
             # Look for .pt files in the weights directory
             for model_file in models_dir.glob("*.pt"):
                 model_name = model_file.stem  # filename without extension
-                available_models.append({
-                    "name": model_name,
-                    "description": f"Model: {model_name}",
-                    "file_path": str(model_file)
-                })
-        
+                available_models.append(
+                    {
+                        "name": model_name,
+                        "description": f"Model: {model_name}",
+                        "file_path": str(model_file),
+                    }
+                )
+
         # Always include the default best.pt if it exists
         default_model = Path("/models/best.pt")
         if default_model.exists():
-            available_models.insert(0, {
-                "name": "default",
-                "description": "Default trained model",
-                "file_path": str(default_model)
-            })
-        
+            available_models.insert(
+                0,
+                {
+                    "name": "default",
+                    "description": "Default trained model",
+                    "file_path": str(default_model),
+                },
+            )
+
         return {
             "success": True,
             "models": available_models,
-            "count": len(available_models)
+            "count": len(available_models),
         }
 
     except Exception as e:
@@ -384,19 +390,19 @@ async def get_model_info(model_name: str, auth=Depends(check_auth)):
     """Get information about a specific model"""
     try:
         models_dir = Path("/models/weights")
-        
+
         # Handle default model
         if model_name == "default":
             model_path = Path("/models/best.pt")
         else:
             model_path = models_dir / f"{model_name}.pt"
-        
+
         if not model_path.exists():
             raise HTTPException(status_code=404, detail="Model not found")
-        
+
         # Get file stats
         file_stats = model_path.stat()
-        
+
         return {
             "success": True,
             "model": {
@@ -404,8 +410,10 @@ async def get_model_info(model_name: str, auth=Depends(check_auth)):
                 "description": f"Model: {model_name}",
                 "file_path": str(model_path),
                 "file_size_mb": round(file_stats.st_size / (1024 * 1024), 2),
-                "last_modified": datetime.fromtimestamp(file_stats.st_mtime, timezone.utc).isoformat()
-            }
+                "last_modified": datetime.fromtimestamp(
+                    file_stats.st_mtime, timezone.utc
+                ).isoformat(),
+            },
         }
 
     except HTTPException:
@@ -424,12 +432,13 @@ async def system_health_check(auth=Depends(check_auth)):
         # Check if models directory exists and has models
         models_dir = Path("/models/weights")
         default_model = Path("/models/best.pt")
-        
+
         models_count = len(list(models_dir.glob("*.pt"))) if models_dir.exists() else 0
         has_default_model = default_model.exists()
-        
+
         # Check disk space
         import shutil
+
         disk_usage = shutil.disk_usage("/models")
 
         return {

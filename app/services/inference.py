@@ -27,15 +27,17 @@ class InferenceService:
                     model_path = Path("/models/weights/best.pt")
             else:
                 model_path = Path(f"/models/weights/{model_name}.pt")
-                
+
             if not model_path.exists():
-                raise FileNotFoundError(f"Model '{model_name}' not found at {model_path}")
+                raise FileNotFoundError(
+                    f"Model '{model_name}' not found at {model_path}"
+                )
 
             self._model = YOLO(str(model_path))
             self._current_model_name = model_name
         except Exception as e:
             raise RuntimeError(f"Failed to load model {model_name}: {e}")
-    
+
     def _ensure_model_loaded(self, model_name="default"):
         """Ensure the correct model is loaded, reload if necessary"""
         if self._current_model_name != model_name or self._model is None:
@@ -46,7 +48,7 @@ class InferenceService:
         try:
             # Ensure default model is loaded for warmup
             self._ensure_model_loaded("default")
-            
+
             import torch
             from PIL import Image
             import numpy as np
@@ -65,13 +67,12 @@ class InferenceService:
     def predict(self, image_path, output_path, model_name="default"):
         # Load the appropriate model if different from current
         self._ensure_model_loaded(model_name)
-        
+
         results = self._model.predict(
-            source=image_path,
-            iou=0.25,  # softer NMS
-            agnostic_nms=True,
-            augment=True,
+            source=image_path
         )
+
+        individual_confidences = {0: 0.15, 1: 0.10, 2: 0.05, 3: 0.50, 4: 0.30}
 
         metadata = {
             "detection_count": 0,
@@ -88,6 +89,9 @@ class InferenceService:
                 for i in range(len(boxes)):
                     class_id = int(boxes.cls[i])
                     conf = float(boxes.conf[i])
+
+                    if conf < individual_confidences.get(class_id, 0.25):
+                        continue
 
                     # Get both pixel and normalized coordinates from YOLO
                     pixel_coords = boxes.xyxy[i]  # Pixel coordinates
