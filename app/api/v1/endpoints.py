@@ -1,16 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from app.core.security import check_auth
-from app.services.minio_connection import get_minio_client
 from app.services.inference import InferenceService
 from app.services.training import TrainingService
 from app.services.dataset import DatasetService
-from app.services.utils import (
-    prepare_metadata,
-    cleanup_temp_files,
-    validate_request_data,
-    setup_temp_directory,
-)
+from app.services.utils import cleanup_temp_files
 import os
+import base64
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -23,65 +18,76 @@ def health_check():
 
 
 @router.post("/inferencia")
-async def run_inference(request: Request, auth=Depends(check_auth)):
+async def run_inference(
+    image: UploadFile = File(...),
+    model_name: str = Form("default"),
+    auth=Depends(check_auth),
+):
+    """
+    Run inference on uploaded image and return results as base64 encoded data.
+    Receives image directly via HTTP upload.
+    """
     try:
-        request_data = await request.json()
-        object_path = validate_request_data(request_data)
+        # Validate uploaded file
+        if not image.content_type or not image.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Invalid image file")
 
-        # Get optional model name, default to "default" (best.pt)
-        model_name = request_data.get("modelName", "default")
-
-        bucket_name = os.environ.get("S3_BUCKET_INFERENCES_RESULTS")
-        live_url = os.environ.get("S3_LIVE_BASE_URL")
+        # Setup temporary directory for processing
         temp_images_dir = Path(os.environ.get("TEMP_IMAGES_DIR", "/tmp/temp_images"))
-        temp_dir, download_path, base_dir_id = setup_temp_directory(
-            object_path, temp_images_dir
+        temp_images_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate unique directory for this inference
+        import uuid
+
+        unique_id = uuid.uuid4().hex[:8]
+        temp_dir = temp_images_dir / f"inference_{unique_id}"
+        temp_dir.mkdir(exist_ok=True)
+
+        # Save uploaded image to temporary file
+        download_path = (
+            temp_dir
+            / f"input_image.{image.filename.split('.')[-1] if '.' in image.filename else 'jpg'}"
         )
-        minio_client = get_minio_client()
-        # Download image from MinIO
-        minio_client.fget_object(bucket_name, str(object_path), str(download_path))
+
+        with open(download_path, "wb") as buffer:
+            content = await image.read()
+            buffer.write(content)
 
         # Execute inference with specified model
         result_image_path = temp_dir / "inference_result.jpg"
         service = InferenceService()
+
         try:
             metadata = service.predict(
                 download_path, result_image_path, model_name=model_name
             )
         except Exception as exc:
-            error_msg = f"Error executing inference {object_path} with model {model_name}: {str(exc)}"
+            error_msg = f"Error executing inference with model {model_name}: {str(exc)}"
             raise HTTPException(status_code=500, detail=error_msg)
 
         if not result_image_path.exists():
             raise HTTPException(status_code=500, detail="Result image not found")
-        result_object_path = f"{base_dir_id}/inference_result.jpg"
-        metadata_object_path = f"{base_dir_id}/metadata.json"
-        metadata_path, basic_metadata = prepare_metadata(
-            temp_dir, metadata_object_path, metadata
-        )
-        # Upload results to MinIO
-        minio_client.fput_object(
-            bucket_name,
-            result_object_path,
-            str(result_image_path),
-            metadata=basic_metadata,
-        )
-        minio_client.fput_object(bucket_name, metadata_object_path, str(metadata_path))
+
+        # Read result image and encode as base64
+        with open(result_image_path, "rb") as img_file:
+            result_image_b64 = base64.b64encode(img_file.read()).decode("utf-8")
+
         # Clean up temporary files
-        temp_files = [download_path, result_image_path, metadata_path]
+        temp_files = [download_path, result_image_path]
         cleanup_temp_files(temp_files, temp_dir)
-        base_url = f"{live_url}{bucket_name}"
+
+        # Return results with base64 encoded image and metadata
         response_data = {
-            "generatedImgUrl": f"{base_url}/{result_object_path}",
-            "metadataUrl": f"{base_url}/{metadata_object_path}",
+            "result_image": result_image_b64,
+            "metadata": metadata,
+            "content_type": "image/jpeg",
         }
         return response_data
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+
+    except HTTPException:
+        raise
     except Exception as e:
-        obj_path = locals().get("object_path", "unknown")
-        model_name = locals().get("model_name", "unknown")
-        error_msg = f"Error generating inference for {obj_path} with model {model_name}: {str(e)}"
+        error_msg = f"Error generating inference with model {model_name}: {str(e)}"
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -93,7 +99,7 @@ async def create_training_job(request: Request, auth=Depends(check_auth)):
         training_data = await request.json()
 
         # Validate required fields
-        required_fields = ["modelName", "datasetId", "datasetPath", "trainingParams"]
+        required_fields = ["modelName", "datasetId", "trainingParams"]
         for field in required_fields:
             if field not in training_data:
                 raise HTTPException(
@@ -309,34 +315,53 @@ async def list_datasets(auth=Depends(check_auth)):
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-@router.post("/datasets/test")
-async def test_dataset_download(request: Request, auth=Depends(check_auth)):
-    """Test dataset download and preparation"""
+@router.post("/datasets/upload")
+async def upload_dataset(
+    dataset: UploadFile = File(...),
+    dataset_id: int = Form(...),
+    model_name: str = Form(...),
+    auth=Depends(check_auth),
+):
+    """Upload and prepare dataset for training"""
     try:
-        dataset_info = await request.json()
+        # Validate uploaded file
+        if not dataset.filename.endswith((".zip", ".tar.gz", ".tar")):
+            raise HTTPException(
+                status_code=400, detail="Dataset must be a zip or tar file"
+            )
 
-        # Validate required fields
-        required_fields = ["datasetId", "datasetPath", "modelName"]
-        for field in required_fields:
-            if field not in dataset_info:
-                raise HTTPException(
-                    status_code=400, detail=f"Missing required field: {field}"
-                )
+        # Create dataset info object
+        dataset_info = {
+            "datasetId": dataset_id,
+            "modelName": model_name,
+            "filename": dataset.filename,
+        }
 
+        # Save uploaded dataset to temporary location
+        temp_dataset_dir = Path("/tmp/uploaded_datasets")
+        temp_dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        dataset_path = temp_dataset_dir / f"dataset_{dataset_id}_{dataset.filename}"
+
+        with open(dataset_path, "wb") as buffer:
+            content = await dataset.read()
+            buffer.write(content)
+
+        # Prepare dataset using uploaded file
         dataset_service = DatasetService()
-        yaml_config_path = await dataset_service.download_and_prepare_dataset(
-            dataset_info
+        yaml_config_path = await dataset_service.prepare_uploaded_dataset(
+            dataset_path, dataset_info
         )
 
         return {
             "success": True,
-            "message": "Dataset downloaded and prepared successfully",
+            "message": "Dataset uploaded and prepared successfully",
             "yamlConfigPath": yaml_config_path,
         }
 
     except Exception as e:
-        error_msg = f"Error testing dataset download: {str(e)}"
-        print(f"Dataset test error: {error_msg}", flush=True)
+        error_msg = f"Error processing uploaded dataset: {str(e)}"
+        print(f"Dataset upload error: {error_msg}", flush=True)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
